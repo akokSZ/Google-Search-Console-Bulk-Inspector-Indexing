@@ -10,6 +10,7 @@
 // @downloadURL  https://raw.githubusercontent.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing/main/google-search-console-bulk-inspector-indexing.user.js
 // @supportURL   https://github.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing/issues
 // @homepageURL  https://github.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing
+// @license      The Unlicense
 // ==/UserScript==
 
 (function () {
