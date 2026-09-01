@@ -705,16 +705,18 @@
             'this url is on google'
         ];
 
-        const matchedIndexed = indexedPatterns.find(pattern => bodyText.includes(pattern));
-        if (matchedIndexed) {
-            console.log('[GSC Bulk DEBUG] getIndexState: найден паттерн indexed:', matchedIndexed);
-            return 'indexed';
-        }
-
+        // Проверяем сначала паттерны «не в индексе», чтобы избежать ложных срабатываний на совпадения вроде
+        // "page is not indexed" vs "page is indexed" в разных частях текста.
         const matchedNotIndexed = notIndexedPatterns.find(pattern => bodyText.includes(pattern));
         if (matchedNotIndexed) {
             console.log('[GSC Bulk DEBUG] getIndexState: найден паттерн not_indexed:', matchedNotIndexed);
             return 'not_indexed';
+        }
+
+        const matchedIndexed = indexedPatterns.find(pattern => bodyText.includes(pattern));
+        if (matchedIndexed) {
+            console.log('[GSC Bulk DEBUG] getIndexState: найден паттерн indexed:', matchedIndexed);
+            return 'indexed';
         }
 
         console.log('[GSC Bulk DEBUG] getIndexState: не найдено ни одного паттерна');
