@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Google Search Console — Bulk Inspector & Indexing
 // @namespace    gsc-bulk-inspector-indexing
-// @version      4.4
+// @version      4.9
 // @description  Массовая проверка URL и запрос переобхода через интерфейс Google Search Console
 // @match        https://search.google.com/search-console*
 // @run-at       document-idle
@@ -14,11 +14,11 @@
     const LEGACY_STORAGE_KEY = 'gsc_bulk_inspector_indexing_v8';
     const MIN_DELAY = 20000;
     const MAX_DELAY = 40000;
-    const WAIT_FOR_RESULT = 30000;
+    const WAIT_FOR_RESULT = 60000;
     const WAIT_FOR_BUTTON = 30000;
     const WAIT_FOR_REQUEST_RESULT = 30000;
     const WAIT_FOR_POPUP_CLOSE = 5000;
-    const APP_VERSION = '4.4';
+    const APP_VERSION = '4.9';
 
     function createInitialState(resourceId = null) {
         return {
@@ -34,7 +34,8 @@
             paused: false,
             stopped: false,
             resumeAfterNavigation: false,
-            quotaPaused: false
+            quotaPaused: false,
+            panelCollapsed: false
         };
     }
 
@@ -513,6 +514,20 @@
             pauseButton.textContent = state.paused ? 'Продолжить' : 'Пауза';
         }
 
+        const collapseButton = getElement('gsc-collapse');
+        if (collapseButton) {
+            collapseButton.textContent = state.panelCollapsed ? '+' : '−';
+        }
+
+        const panel = getElement('gsc-panel');
+        if (panel) {
+            if (state.panelCollapsed) {
+                panel.classList.add('collapsed');
+            } else {
+                panel.classList.remove('collapsed');
+            }
+        }
+
         renderCurrent();
         renderLog();
         updateButtons();
@@ -631,13 +646,32 @@
             .toLowerCase();
     }
 
-    function containsAnyPattern(text, patterns) {
+    function hasIndexingInProgress() {
+        const text = getInspectionBodyText();
+        const patterns = [
+            'проверяется возможность индексации',
+            'проверка возможности индексации',
+            'проверяется, можно ли проиндексировать эту страницу',
+            'checking whether this page can be indexed',
+            'checking if this page can be indexed',
+            'this page is being checked for indexing',
+            'получение данных',
+            'loading',
+            'please wait'
+        ];
+
         return patterns.some(pattern => text.includes(pattern));
     }
 
     function getIndexState() {
         const bodyText = getInspectionBodyText();
         if (!bodyText) {
+            console.log('[GSC Bulk DEBUG] getIndexState: bodyText пуст');
+            return null;
+        }
+
+        if (hasIndexingInProgress()) {
+            console.log('[GSC Bulk DEBUG] getIndexState: индексирование в процессе');
             return null;
         }
 
@@ -655,21 +689,30 @@
         ];
 
         const indexedPatterns = [
-            'эта страница проиндексирована',
             'url есть в индексе google',
             'url is on google',
+            'эта страница проиндексирована',
+            'эта страница уже проиндексирована',
+            'страница проиндексирована',
             'the page is indexed',
-            'page is indexed'
+            'page is indexed',
+            'url is indexed',
+            'this url is on google'
         ];
 
-        if (notIndexedPatterns.some(pattern => bodyText.includes(pattern))) {
-            return 'not_indexed';
-        }
-
-        if (indexedPatterns.some(pattern => bodyText.includes(pattern))) {
+        const matchedIndexed = indexedPatterns.find(pattern => bodyText.includes(pattern));
+        if (matchedIndexed) {
+            console.log('[GSC Bulk DEBUG] getIndexState: найден паттерн indexed:', matchedIndexed);
             return 'indexed';
         }
 
+        const matchedNotIndexed = notIndexedPatterns.find(pattern => bodyText.includes(pattern));
+        if (matchedNotIndexed) {
+            console.log('[GSC Bulk DEBUG] getIndexState: найден паттерн not_indexed:', matchedNotIndexed);
+            return 'not_indexed';
+        }
+
+        console.log('[GSC Bulk DEBUG] getIndexState: не найдено ни одного паттерна');
         return null;
     }
 
@@ -723,20 +766,32 @@
         setStatus('Жду результат проверки URL...');
 
         try {
+            let attempts = 0;
             return await waitFor(() => {
+                attempts++;
                 const indexState = getIndexState();
                 if (indexState) {
+                    console.log('[GSC Bulk] Найден статус индекса:', indexState);
                     return indexState;
                 }
 
                 const googleError = findGoogleError();
                 if (googleError) {
+                    console.log('[GSC Bulk] Найдена ошибка Google:', googleError);
                     return googleError;
+                }
+
+                // Логируем каждую 10-ю попытку для отладки
+                if (attempts % 10 === 0) {
+                    const bodyText = getInspectionBodyText();
+                    console.log('[GSC Bulk] Попытка', attempts, '- видимый текст (первые 200 символов):', bodyText.substring(0, 200));
                 }
 
                 return false;
             }, WAIT_FOR_RESULT, 300);
         } catch (e) {
+            const bodyText = getInspectionBodyText();
+            console.log('[GSC Bulk] Timeout - видимый текст:', bodyText);
             return null;
         }
     }
@@ -806,12 +861,20 @@
         const patterns = [
             'url добавлен в приоритетную очередь сканирования',
             'url добавлен в очередь сканирования',
+            'добавлен в очередь сканирования',
+            'добавлен в приоритетную очередь сканирования',
             'отправлен запрос на индексирование',
             'запрос на индексирование отправлен',
             'индексирование запрошено',
+            'url добавлен в приоритетную очередь индексирования',
+            'в приоритетной очереди',
             'request submitted',
             'indexing requested',
-            'request for indexing has been submitted'
+            'request for indexing has been submitted',
+            'queued for crawling',
+            'queued for indexing',
+            'submitted for indexing',
+            'url has been added to the crawl queue'
         ];
 
         return patterns.some(pattern => text.includes(pattern));
@@ -819,38 +882,74 @@
 
     async function waitForRequestResult() {
         setStatus('Жду результат запроса Google...');
+        console.log('[GSC Bulk] waitForRequestResult: начало ожидания');
 
         try {
+            let attempts = 0;
             return await waitFor(() => {
+                attempts++;
+                
                 const quota = findQuotaMessage();
                 if (quota) {
+                    console.log('[GSC Bulk DEBUG] waitForRequestResult попытка', attempts, '- найдена квота');
                     return { type: 'quota', message: quota };
                 }
 
-                if (hasIndexingConfirmation()) {
+                if (hasIndexingInProgress()) {
+                    if (attempts % 10 === 0) {
+                        console.log('[GSC Bulk DEBUG] waitForRequestResult попытка', attempts, '- индексирование в процессе');
+                    }
+                    return false;
+                }
+
+                const hasConfirm = hasIndexingConfirmation();
+                const hasElement = findConfirmationElement();
+                
+                if (attempts % 10 === 0) {
+                    console.log('[GSC Bulk DEBUG] waitForRequestResult попытка', attempts, '- hasIndexingConfirmation:', hasConfirm, '- findConfirmationElement:', !!hasElement);
+                }
+                
+                if (hasConfirm || hasElement) {
+                    console.log('[GSC Bulk DEBUG] waitForRequestResult - SUCCESS найдено подтверждение');
                     return { type: 'success', message: 'Запрос принят Google.' };
                 }
 
                 return false;
             }, WAIT_FOR_REQUEST_RESULT, 300);
         } catch (e) {
+            console.log('[GSC Bulk] waitForRequestResult: timeout после', WAIT_FOR_REQUEST_RESULT, 'мс');
+            const bodyText = getInspectionBodyText();
+            console.log('[GSC Bulk] waitForRequestResult timeout - видимый текст (первые 500 символов):', bodyText.substring(0, 500));
             return null;
         }
     }
 
     function findConfirmationElement() {
-        const dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"]');
+        const successPatterns = [
+            'приоритетную очередь',
+            'очередь сканирования',
+            'запрос на индексирование',
+            'индексирование запрошено',
+            'request submitted',
+            'indexing requested',
+            'queued for crawling',
+            'queued for indexing',
+            'submitted for indexing',
+            'added to the crawl queue'
+        ];
+
+        const dialogs = document.querySelectorAll('[role="dialog"], [aria-modal="true"], [role="alertdialog"]');
         for (const el of dialogs) {
             const text = (el.innerText || '').toLowerCase();
-            if (text.includes('приоритетную очередь') || text.includes('запрос на индексирование') || text.includes('indexing requested')) {
+            if (successPatterns.some(pattern => text.includes(pattern))) {
                 return el;
             }
         }
 
-        const elements = document.querySelectorAll('div');
+        const elements = document.querySelectorAll('div, span, p, button');
         for (const el of elements) {
             const text = (el.innerText || '').toLowerCase();
-            if (text.includes('url добавлен в приоритетную очередь') && text.length < 1200) {
+            if (text.length < 1200 && successPatterns.some(pattern => text.includes(pattern))) {
                 return el;
             }
         }
@@ -864,25 +963,44 @@
             return true;
         }
 
-        const candidates = popup.querySelectorAll('button, [role="button"], div[aria-label], a');
-        for (const el of candidates) {
-            const text = (el.innerText || '').trim().toLowerCase();
-            const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-            const title = (el.getAttribute('title') || '').trim().toLowerCase();
-
-            if (aria.includes('закрыть') || aria.includes('close') || title.includes('закрыть') || title.includes('close') || text === 'закрыть' || text === 'close') {
-                el.click();
+        try {
+            const candidates = popup.querySelectorAll('button, [role="button"], div[aria-label], a');
+            for (const el of candidates) {
                 try {
-                    await waitFor(() => !findConfirmationElement(), WAIT_FOR_POPUP_CLOSE, 200);
-                } catch (e) {
-                    // Уже закрыто.
+                    const text = (el.innerText || '').trim().toLowerCase();
+                    const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+                    const title = (el.getAttribute('title') || '').trim().toLowerCase();
+
+                    if (aria.includes('закрыть') || aria.includes('close') || title.includes('закрыть') || title.includes('close') || text === 'закрыть' || text === 'close') {
+                        try {
+                            // Просто кликаем на кнопку, не ожидая закрытия диалога
+                            // Это позволяет Google самостоятельно обработать закрытие
+                            el.click();
+                            // Небольшая пауза, чтобы Google обработал клик
+                            await sleep(300);
+                            return true;
+                        } catch (clickError) {
+                            console.log('[GSC Bulk] closeConfirmationPopup: ошибка при клике на кнопку:', clickError.message);
+                            // Продолжаем со следующей кнопки
+                        }
+                    }
+                } catch (itemError) {
+                    console.log('[GSC Bulk] closeConfirmationPopup: ошибка при обработке элемента:', itemError.message);
+                    // Продолжаем
                 }
-                return true;
             }
+        } catch (e) {
+            console.log('[GSC Bulk] closeConfirmationPopup: ошибка при получении элементов:', e.message);
         }
 
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-        await sleep(500);
+        // Fallback: пытаемся закрыть с помощью Escape
+        try {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+            await sleep(300);
+        } catch (e) {
+            console.log('[GSC Bulk] closeConfirmationPopup: ошибка при отправке Escape:', e.message);
+        }
+
         return true;
     }
 
@@ -895,9 +1013,9 @@
         }
 
         setInputValue(input, url);
-        await sleep(500);
+        await sleep(800);
         pressEnter(input);
-        await sleep(1500);
+        await sleep(2000);
         setStatus('Проверка URL запущена.');
     }
 
@@ -926,6 +1044,12 @@
         }
 
         const indexState = result;
+        const bodyText = getInspectionBodyText();
+        console.log('[GSC Bulk] Результат проверки URL:', url);
+        console.log('[GSC Bulk] Статус индекса:', indexState);
+        console.log('[GSC Bulk] === ПОЛНЫЙ ВИДИМЫЙ ТЕКСТ ===');
+        console.log(bodyText);
+        console.log('[GSC Bulk] === КОНЕЦ ===');
 
         if (indexState === 'indexed') {
             state.results[url] = {
@@ -948,19 +1072,26 @@
         saveState();
         render();
 
+        // Даем пользователю время увидеть результат перед переходом к следующему URL
+        await sleep(2000);
+
         return { status: 'inspected', indexState };
     }
 
     async function sendUrl(url) {
+        console.log('[GSC Bulk] sendUrl: начало для URL:', url);
         await openInspectionForUrl(url);
         setStatus('Ищу «Запросить индексирование»...');
+        console.log('[GSC Bulk] sendUrl: ищу кнопку "Запросить индексирование"');
 
         let button;
         try {
             button = await waitFor(() => findRequestIndexingButton(), WAIT_FOR_BUTTON);
         } catch (e) {
+            console.log('[GSC Bulk] sendUrl: не удалось найти кнопку за', WAIT_FOR_BUTTON, 'мс');
             const googleError = findGoogleError();
             if (googleError) {
+                console.log('[GSC Bulk] sendUrl: обнаружена ошибка Google:', googleError);
                 if (googleError.type === 'quota') {
                     pauseBecauseOfQuota(url, googleError.message);
                     return { status: 'quota' };
@@ -971,17 +1102,23 @@
         }
 
         if (!button) {
+            console.log('[GSC Bulk] sendUrl: кнопка не найдена (button === null)');
             throw new Error('Кнопка «Запросить индексирование» не найдена.');
         }
 
+        console.log('[GSC Bulk] sendUrl: кнопка найдена, нажимаю её');
         button.scrollIntoView({ behavior: 'smooth', block: 'center' });
         await sleep(300);
 
         setStatus('Отправляю запрос на переобход...');
         button.click();
+        console.log('[GSC Bulk] sendUrl: кнопка нажата, жду результат');
 
         const requestResult = await waitForRequestResult();
+        console.log('[GSC Bulk] sendUrl: результат запроса:', requestResult);
+        
         if (!requestResult) {
+            console.log('[GSC Bulk] sendUrl: результат пуст (null)');
             const googleError = findGoogleError();
             if (googleError && googleError.type === 'quota') {
                 pauseBecauseOfQuota(url, googleError.message);
@@ -991,14 +1128,22 @@
         }
 
         if (requestResult.type === 'quota') {
+            console.log('[GSC Bulk] sendUrl: достигнута квота');
             pauseBecauseOfQuota(url, requestResult.message);
             return { status: 'quota' };
         }
 
         if (requestResult.type === 'success') {
+            console.log('[GSC Bulk] sendUrl: успех! закрываю popup');
             setStatus('Запрос принят. Закрываю окно подтверждения...');
-            await closeConfirmationPopup();
-            await sleep(500);
+            
+            try {
+                await closeConfirmationPopup();
+            } catch (popupError) {
+                console.log('[GSC Bulk] sendUrl: ошибка при закрытии popup (игнорируем):', popupError.message);
+            }
+            
+            await sleep(3000);
 
             const previous = state.results[url] || {};
             state.results[url] = {
@@ -1011,9 +1156,11 @@
             addLog(url, 'SUCCESS', 'URL добавлен в приоритетную очередь сканирования.');
             saveState();
             render();
+            console.log('[GSC Bulk] sendUrl: завершено успешно');
             return { status: 'success', waitAfter: randomDelay() };
         }
 
+        console.log('[GSC Bulk] sendUrl: неизвестный результат:', requestResult);
         throw new Error('Неизвестный результат запроса Google.');
     }
 
@@ -1049,8 +1196,28 @@
         return !state.stopped;
     }
 
+    function isSearchConsolePage() {
+        try {
+            return /^https:\/\/search\.google\.com\/search-console/i.test(window.location.href);
+        } catch (e) {
+            return false;
+        }
+    }
+
     function navigateToConsoleHome() {
-        if (!resourceInfo) {
+        if (!resourceInfo || state.stopped || state.paused || state.quotaPaused) {
+            state.resumeAfterNavigation = false;
+            saveState();
+            return;
+        }
+
+        if (!isSearchConsolePage()) {
+            state.resumeAfterNavigation = false;
+            saveState();
+            return;
+        }
+
+        if (!state.running || !state.action || !Array.isArray(state.actionUrls) || state.currentIndex >= state.actionUrls.length) {
             state.resumeAfterNavigation = false;
             saveState();
             return;
@@ -1128,6 +1295,14 @@
             state.currentIndex++;
             saveState();
             render();
+
+            if (state.stopped || state.paused || state.quotaPaused) {
+                processing = false;
+                state.running = false;
+                state.resumeAfterNavigation = false;
+                saveState();
+                return;
+            }
 
             if (state.currentIndex < state.actionUrls.length) {
                 navigateToConsoleHome();
@@ -1209,13 +1384,17 @@
                     return;
                 }
 
-                if (result.waitAfter) {
+                if (result.waitAfter && state.currentIndex + 1 < state.actionUrls.length) {
                     const ok = await waitAfterSending(result.waitAfter);
                     if (!ok) {
                         break;
                     }
                 }
             } catch (e) {
+                console.log('[GSC Bulk] processSendQueue: ошибка при отправке URL:', url);
+                console.log('[GSC Bulk] processSendQueue: сообщение об ошибке:', e.message);
+                console.log('[GSC Bulk] processSendQueue: stack:', e.stack);
+                
                 const previous = state.results[url] || {};
                 state.results[url] = {
                     status: 'error',
@@ -1230,6 +1409,14 @@
             state.currentIndex++;
             saveState();
             render();
+
+            if (state.stopped || state.paused || state.quotaPaused) {
+                processing = false;
+                state.running = false;
+                state.resumeAfterNavigation = false;
+                saveState();
+                return;
+            }
 
             if (state.currentIndex < state.actionUrls.length) {
                 navigateToConsoleHome();
@@ -1297,22 +1484,23 @@
             return;
         }
 
+        if (state.stopped || state.paused) {
+            state.resumeAfterNavigation = false;
+            saveState();
+            return;
+        }
+
+        if (!isSearchConsolePage()) {
+            return;
+        }
+
         if (!state.resumeAfterNavigation) {
             return;
         }
 
-        if (!state.action || !Array.isArray(state.actionUrls) || !state.actionUrls.length) {
+        if (!state.action || !Array.isArray(state.actionUrls) || !state.actionUrls.length || state.currentIndex >= state.actionUrls.length) {
             state.resumeAfterNavigation = false;
             saveState();
-            return;
-        }
-
-        if (state.paused) {
-            state.resumeAfterNavigation = false;
-            state.running = false;
-            saveState();
-            render();
-            setStatus('Операция находится на паузе.');
             return;
         }
 
@@ -1322,7 +1510,7 @@
         saveState();
 
         setTimeout(() => {
-            if (processing || state.paused || state.quotaPaused) {
+            if (processing || state.paused || state.quotaPaused || state.stopped) {
                 return;
             }
             processing = true;
@@ -1334,6 +1522,12 @@
         }, 1000);
     }
 
+    function togglePanelCollapse() {
+        state.panelCollapsed = !state.panelCollapsed;
+        saveState();
+        render();
+    }
+
     function createPanel() {
         if (getElement('gsc-panel')) {
             return;
@@ -1342,7 +1536,10 @@
         const panel = document.createElement('div');
         panel.id = 'gsc-panel';
         panel.innerHTML = `
-            <div class="gsc-header">Google Search Console — Bulk Inspector & Indexing</div>
+            <div class="gsc-header">
+                <span class="gsc-header-title">Google Search Console — Bulk Inspector & Indexing</span>
+                <button id="gsc-collapse" class="gsc-collapse-btn">−</button>
+            </div>
             <div class="gsc-content">
                 <div class="gsc-resource">
                     <b>Ресурс:</b>
@@ -1402,6 +1599,7 @@
         getElement('gsc-save-project').addEventListener('click', saveProject);
         getElement('gsc-load-project').addEventListener('click', loadProject);
         getElement('gsc-export').addEventListener('click', exportResults);
+        getElement('gsc-collapse').addEventListener('click', togglePanelCollapse);
 
         render();
     }
@@ -1430,6 +1628,40 @@
             border-bottom: 1px solid #cccccc;
             font-size: 16px;
             font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #gsc-panel .gsc-header-title {
+            flex: 1;
+        }
+
+        .gsc-collapse-btn {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            border: 1px solid #999999;
+            border-radius: 4px;
+            background: #f5f5f5;
+            cursor: pointer;
+            font-size: 18px;
+            font-weight: bold;
+            line-height: 1;
+            margin-left: 10px;
+        }
+
+        .gsc-collapse-btn:hover {
+            background: #e5e5e5;
+        }
+
+        #gsc-panel.collapsed .gsc-content {
+            display: none;
+        }
+
+        #gsc-panel.collapsed {
+            width: auto;
+            min-width: 300px;
         }
 
         #gsc-panel .gsc-content { padding: 13px; }
