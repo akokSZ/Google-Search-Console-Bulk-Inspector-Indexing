@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         Google Search Console — Bulk Inspector & Indexing
 // @namespace    gsc-bulk-inspector-indexing
-// @version      4.9
+// @version      5.0
 // @description  Массовая проверка URL и запрос переобхода через интерфейс Google Search Console
 // @match        https://search.google.com/search-console*
 // @run-at       document-idle
 // @grant        GM_addStyle
+// @updateURL    https://raw.githubusercontent.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing/main/google-search-console-bulk-inspector-indexing.user.js
+// @downloadURL  https://raw.githubusercontent.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing/main/google-search-console-bulk-inspector-indexing.user.js
+// @supportURL   https://github.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing/issues
+// @homepageURL  https://github.com/akokSZ/Google-Search-Console-Bulk-Inspector-Indexing
 // ==/UserScript==
 
 (function () {
@@ -18,7 +22,7 @@
     const WAIT_FOR_BUTTON = 30000;
     const WAIT_FOR_REQUEST_RESULT = 30000;
     const WAIT_FOR_POPUP_CLOSE = 5000;
-    const APP_VERSION = '4.9';
+    const APP_VERSION = '5.0';
 
     function createInitialState(resourceId = null) {
         return {
